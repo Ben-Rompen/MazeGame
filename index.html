@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<title>MazeGame</title>
+		<meta charset="utf-8">
+		<meta name="description" content="MazeGame JavaScript coding demo with WebGL">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+		<script src="mainloop.min.js"></script>
+		<!--script src="//cdnjs.cloudflare.com/ajax/libs/seedrandom/2.4.0/seedrandom.min.js"></script-->
+	</head>
+	<body>
+		<canvas id="gamecanvas" width="600" height="600" style="border:1px solid #000000;"></canvas>
+    </div>
+
+    <div id="fpscounter">0 FPS</div>
+	<div id="orientation">Yaw: 180 Pitch: 90</div>
+	</body>
+</html>
+<script>
+	function MazeCell(x, y, w0, w1, w2, w3)
+	//function MazeCell(x, y)
+	{
+		this.x = x;
+		this.y = y;
+		this.walls = [w0, w1, w2, w3];	//Walls are in this format: 0 = up, 1 = right, 2 = down, 3 = left
+		this.visited = 0;
+		
+		//tree structure - nearest neighbors
+		this._neighbors = [];
+		
+		//Flyweight pattern: there are 5 types of cell (plus a 6th closed cell) that are just rotated in space.
+		this.celltype = 0;
+		this.cellrotate = 0;
+	}
+	
+	function Maze(gridX, gridY, gridScale)
+	{
+		this.gridX = gridX;
+		this.gridY = gridY;
+		this.gridScale = gridScale;
+		this.maze = [];
+		this.mazeGeometry = [];
+		for(var i = 0; i < this.gridX; i++)
+		{
+			this.maze[i] = new Array()
+			for(var j = 0; j < this.gridY; j++)
+			{
+				this.maze[i].push(new MazeCell(0, 0, 1, 1, 1, 1));
+				//this.maze[i].push(new MazeCell(0, 0));
+			}
+		}
+		this.generateMaze();
+	}
+	
+	Maze.prototype.getMatrixValues = function(rotation){
+		switch(rotation)
+		{
+			case 1:	//90 degrees clockwise
+				return {
+					"sin": 1,
+					"cos": 0
+				};
+				break;
+			case 2: //180 degrees clockwise
+				return {
+					"sin": 0,
+					"cos": -1
+				}
+				break;
+			case 3: //270 degrees clockwise
+				return{
+					"sin": -1,
+					"cos": 0
+				};
+				break;
+			case 0: //0 degrees clockwise
+			default:
+				return{
+					"sin": 0,
+					"cos": 1
+				};
+		}
+	};
+	
+	Maze.prototype.cellGeometry = [
+		//Blank "isolated" cell; ignores rotation. Included just in case a cell gets undefined.
+		[
+			0,0, 0,1,
+			0,1, 1,1,
+			1,1, 1,0,
+			1,0, 0,0
+		],
+		//Cul-de-sac (1 exit)
+		//The cul-de-sac is open at the top (remember the canvas has + be down) |_|
+		[
+			0,0, 0,1,
+			0,1, 1,1,
+			1,1, 1,0
+		],
+		//Corner - 2 exits at 90 degrees 
+		//The corner is open to the top and the right. |_
+		[
+			0,0, 0,1,
+			0,1, 1,1
+		],
+		//Hallway - 2 exits across from one another. Only 2 orientations, but we will ignore this for simplicity's sake.
+		//The hallway goes top to bottom. | |
+		[
+			0,0, 0,1,
+			1,0, 1,1
+		],
+		//T-junction with 3 exits
+		//This is pretty simple: there's only one wall here, alont the bottom. _
+		[
+			0,1, 1,1
+		],
+		//Crossroads with 4 exits. Ignores rotation.
+		//This doesn't have any geometry at present, but could have it added in the future.
+		[
+		
+		]
+	];
+	
+	Maze.prototype.generateMaze = function()
+	{	
+		//Implementation of Randomized Prim's Algorithm to generate maze
+		var wallList = [];
+		var startX = Math.floor( Math.random() * this.gridX );
+		var startY = Math.floor( Math.random() * this.gridY );
+		
+		var currentCell = this.maze[startX][startY];
+		currentCell.visited = 1;
+		
+		//Start by adding the walls of the starting cell to the list of walls. Ignore walls on edge.
+		//wall 0 (top)
+		if(startY != 0)
+		{
+			wallList.push(new Array(startX, startY, 0, startX, startY-1, 2));
+		}
+		//wall 1 (right)
+		if(startX != this.gridX-1)
+		{
+			wallList.push(new Array(startX, startY, 1, startX+1, startY, 3));
+		}
+		//wall 2 (bottom)
+		if(startY != this.gridY-1)
+		{
+			wallList.push(new Array(startX, startY, 2, startX, startY+1, 0));
+		}
+		//wall 3 (left)
+		if(startX != 0)
+		{
+			wallList.push(new Array(startX, startY, 3, startX-1, startY, 1));
+		}
+		
+		var fooby = 0;
+		var cellA = 0;
+		var cellB = 0;
+		var currentX = 0;
+		var currentY = 0;
+		var currentWall = 0;
+		
+		//While there are still walls in the list, pick a random wall. Examine the two cells adjoining the walls.
+		while(wallList.length > 0)
+		{
+			fooby = Math.floor( Math.random() * wallList.length );
+			currentWall = wallList[fooby];
+			cellA = this.maze[currentWall[0]][currentWall[1]];
+			cellB = this.maze[currentWall[3]][currentWall[4]];
+			currentX = currentWall[3];
+			currentY = currentWall[4];
+			
+			//If the cells have not both been visited...
+			if(!((cellA.visited==1) && (cellB.visited==1)))
+			{
+				//...remove the wall between the two cells...
+				cellA.walls[currentWall[2]] = 0;
+				cellB.walls[currentWall[5]] = 0;
+				
+				//...make sure to add them as neighbors of each other...
+				cellA._neighbors.push(cellB);
+				cellB._neighbors.push(cellA);
+				
+				//...add the walls of the new cell to the list of walls.
+				//Keep in mind the newly-added cells always come second, so we only have to worry about these.
+				//Also make sure we're not adding the wall we just removed!
+				//wall 0 (top)
+				if(currentY != 0 && currentWall[5] != 0)
+				{
+					wallList.push(new Array(currentX, currentY, 0, currentX, currentY-1, 2));
+				}
+				//wall 1 (right)
+				if(currentX != this.gridX-1 && currentWall[5] != 1)
+				{
+					wallList.push(new Array(currentX, currentY, 1, currentX+1, currentY, 3));
+				}
+				//wall 2 (bottom)
+				if(currentY != this.gridY-1 && currentWall[5] != 2)
+				{
+					wallList.push(new Array(currentX, currentY, 2, currentX, currentY+1, 0));
+				}
+				//wall 3 (left)
+				if(currentX != 0 && currentWall[5] != 3)
+				{
+					wallList.push(new Array(currentX, currentY, 3, currentX-1, currentY, 1));
+				}
+				
+				//Set CellA and CellB as visited.
+				cellA.visited = 1;
+				cellB.visited = 1;
+			}
+			
+			//Remove the wall.
+			wallList.splice(fooby, 1);
+		}
+		
+		var binaryWall = 0b0000;
+		//Go over list and match with correct celltypes and rotations.
+		for(var i = 0; i < this.gridX; i++)
+		{
+			for(var j = 0; j < this.gridY; j++)
+			{
+				cellA = this.maze[i][j];
+				binaryWall = parseInt( (cellA.walls[3]?"0":"1")+(cellA.walls[2]?"0":"1")+(cellA.walls[1]?"0":"1")+(cellA.walls[0]?"0":"1"), 2);
+				switch(binaryWall)
+				{
+					case 1:
+						cellA.celltype = 1;
+						cellA.cellrotate = 0;
+						break;
+					case 2:
+						cellA.celltype = 1;
+						cellA.cellrotate = 1;
+						break;
+					case 3:
+						cellA.celltype = 2;
+						cellA.cellrotate = 0;
+						break;
+					case 4:
+						cellA.celltype = 1;
+						cellA.cellrotate = 2;
+						break;
+					case 5:
+						cellA.celltype = 3;
+						cellA.cellrotate = 0;
+						break;
+					case 6:
+						cellA.celltype = 2;
+						cellA.cellrotate = 1;
+						break;
+					case 7:
+						cellA.celltype = 4;
+						cellA.cellrotate = 1;
+						break;
+					case 8:
+						cellA.celltype = 1;
+						cellA.cellrotate = 3;
+						break;
+					case 9:
+						cellA.celltype = 2;
+						cellA.cellrotate = 3;
+						break;
+					case 10:
+						cellA.celltype = 3;
+						cellA.cellrotate = 1;
+						break;
+					case 11:
+						cellA.celltype = 4;
+						cellA.cellrotate = 0;
+						break;
+					case 12:
+						cellA.celltype = 2;
+						cellA.cellrotate = 2;
+						break;
+					case 13:
+						cellA.celltype = 4;
+						cellA.cellrotate = 3;
+						break;
+					case 14:
+						cellA.celltype = 4;
+						cellA.cellrotate = 2;
+						break;
+					case 15:
+						cellA.celltype = 5;
+						cellA.cellrotate = 0;
+						break;
+					case 0:
+					default:
+						cellA.celltype = 0;
+						cellA.cellrotate = 0;
+				}
+				
+				//Add coordinates to wall geometry
+				
+				var v = Maze.prototype.getMatrixValues(cellA.cellrotate);
+				
+				var geoWidth = 1;
+				var geoCenter = 0.5;
+				
+				var scale = this.gridScale;
+				
+				var a = function(x, y){
+					return scale*( (x-geoCenter)*v.cos - (y-geoCenter)*v.sin + i + geoCenter);
+				}
+				
+				var b = function(x, y){
+					return scale*( (x-geoCenter)*v.sin + (y-geoCenter)*v.cos + j + geoCenter);
+				}
+				
+				for(var k = 0; k < Maze.prototype.cellGeometry[cellA.celltype].length; k=k+2)
+				{
+					//alert(a(Maze.prototype.cellGeometry[cellA.celltype][k], Maze.prototype.cellGeometry[cellA.celltype][k+1]));
+					this.mazeGeometry.push(a(Maze.prototype.cellGeometry[cellA.celltype][k], Maze.prototype.cellGeometry[cellA.celltype][k+1]));
+					this.mazeGeometry.push(b(Maze.prototype.cellGeometry[cellA.celltype][k], Maze.prototype.cellGeometry[cellA.celltype][k+1]));
+				}
+			}
+		}
+	}
+	
+	Maze.prototype.draw = function(context)
+	{
+		context.beginPath();
+		for(var i = 0; i < this.mazeGeometry.length; i=i+4)
+		{
+			context.moveTo(this.mazeGeometry[i], this.mazeGeometry[i+1]);
+			context.lineTo(this.mazeGeometry[i+2], this.mazeGeometry[i+3]);
+		}
+		context.stroke();
+		context.closePath();
+	}
+	
+	function Actor(startCellX, startCellY, FacingVector, FacingPitch, maze)
+	{
+		this.MazeRef = maze;
+		this.posX = this.MazeRef.gridScale * startCellX + this.MazeRef.gridScale / 2;
+		this.posY = this.MazeRef.gridScale * startCellY + this.MazeRef.gridScale / 2;
+		this.facing = FacingVector;
+		this.viewPitch = FacingPitch;
+		
+		this.lastYaw = this.facing;
+		this.lastPitch = this.viewPitch;
+		
+		this.lastX = this.posX;
+		this.lastY = this.posY;
+		
+		this.speed = 0.1;
+		this.turnRateYaw = 0.1;
+		this.turnRatePitch = 0.1;
+		this.radius = 5;
+		
+		this.currentCell = this.MazeRef.maze[startCellX][startCellY];
+		
+		this.geometry = [
+			0, 5,
+			4, -5,
+			-4, -5
+		];
+		
+		this.outputOrientation = document.getElementById("orientation");
+	}
+	
+	Actor.prototype.draw = function(context, interpolationPercentage)
+	{
+		var x = this.lastX + Math.floor((this.posX - this.lastX)*interpolationPercentage);
+		var y = this.lastY + Math.floor((this.posY - this.lastY)*interpolationPercentage);
+		context.beginPath();
+		context.moveTo(this.geometry[0] + x, this.geometry[1] + y);
+		context.lineTo(this.geometry[2] + x, this.geometry[3] + y);
+		context.lineTo(this.geometry[4] + x, this.geometry[5] + y);
+		context.lineTo(this.geometry[0] + x, this.geometry[1] + y);
+		context.stroke();
+		context.closePath();
+	};
+	
+	Actor.prototype.moveForward = function(delta)
+	{
+		this.lastX = this.posX;
+		this.lastY = this.posY;
+		this.posX += Math.floor( Math.sin(this.facing) * this.speed * delta );
+		this.posY += Math.floor( Math.cos(this.facing) * this.speed * delta );
+	};
+	
+	Actor.prototype.moveBack = function(delta)
+	{
+		this.lastX = this.posX;
+		this.lastY = this.posY;
+		this.posX += -Math.floor(Math.sin(this.facing) * this.speed * delta );
+		this.posY += -Math.floor(Math.cos(this.facing) * this.speed * delta );
+	};
+	
+	Actor.prototype.moveStrafeLeft = function(delta)
+	{
+		this.lastX = this.posX;
+		this.lastY = this.posY;
+		this.posX += Math.floor( Math.cos(this.facing) * this.speed * delta );
+		this.posY += Math.floor( Math.sin(this.facing) * this.speed * delta );
+	};
+	
+	Actor.prototype.moveStrafeRight = function(delta)
+	{
+		this.lastX = this.posX;
+		this.lastY = this.posY;
+		this.posX += -Math.floor( Math.cos(this.facing) * this.speed * delta );
+		this.posY += -Math.floor( Math.sin(this.facing) * this.speed * delta );
+	};
+	
+	Actor.prototype.mouseLook = function(coords, delta)
+	{
+		this.lastPitch = this.viewPitch;
+		this.lastYaw = this.facing;
+		
+		var remainder = Math.floor( this.facing + coords[0]*delta/100 ) % 360;
+		this.facing = (remainder >= 0 ? remainder : remainder + 360);
+		this.viewPitch = Math.floor( this.viewPitch + coords[1]*delta/100 );
+		if(this.viewPitch > 180)
+			this.viewPitch = 180;
+		else if(this.viewPitch < 0)
+			this.viewPitch = 0;
+			
+		this.outputOrientation.textContent = "Yaw: "+parseInt(this.facing) + " Pitch: "+parseInt(this.viewPitch);
+	};
+
+	function main(){
+		var canvas = document.getElementById("gamecanvas");
+		var context = canvas.getContext("2d");
+		var fpsCounter = document.getElementById('fpscounter');
+		MainLoop.setMaxAllowedFPS(60);
+		
+		//Set up pointer lock API
+		canvas.requestPointerLock = canvas.requestPointerLock || canvas.mozRequestPointerLock;
+		document.exitPointerLock = document.exitPointerLock || document.mozExitPointerLock;
+		
+		var gameState = 0; //Game's state.
+		// 0 = opening/title screen
+		// 1 = gameplay
+		// 2 = pause
+		// 3 = game over
+		// 4 = win screen
+		
+		var gamePauseTimeout = 0;		//While set to 1, temporarily disables the enter key to prevent rapid pause/unpause toggle
+		var enableGameInputFlag = 0;	//While set to 1, accept game input. This should only be set to 1 while game has pointer lock
+		
+		//Math.seedrandom("SPOODY");
+		
+		var Key = {
+			_pressed: {},
+			mousecoords: {},
+			
+			LEFT: 65,
+			RIGHT: 68,
+			FORWARD: 87,
+			BACK: 83,
+			ENTER: 13,
+			
+			isDown: function(keyCode) {
+				return this._pressed[keyCode];
+			},
+			
+			onKeyDown: function(event){
+				this._pressed[event.keyCode] = true;
+			},
+			
+			onKeyUp: function(event) {
+				delete this._pressed[event.keyCode];
+			},
+			
+			rebindLeftKey: function(keyCode) {
+				this.LEFT = keyCode;
+			},
+			
+			rebindRightKey: function(keyCode) {
+				this.RIGHT = keyCode;
+			},
+			
+			rebindForwardKey: function(keyCode) {
+				this.FORWARD = keyCode;
+			},
+			
+			rebindBackKey: function(keyCode) {
+				this.BACK = keyCode;
+			},
+			
+			getMouseMove: function(event) {
+				this.mousecoords[0] = event.movementX || event.mozMovementX;
+				this.mousecoords[1] = event.movementY || event.mozMovementY;
+			}
+		}
+		
+		var lockChange = function(){
+			//If pointer lock is engaged, enable input
+			if(document.pointerLockElement === canvas || document.mozPointerLockElement === canvas)
+			{
+				enableGameInputFlag = 1;
+			}
+			else
+			{
+				//disable input, pause game if not already paused
+				if(gameState == 1)
+				{
+					gamePause();
+				}
+				enableGameInputFlag = 0;
+			}
+		};
+		
+		canvas.onclick = function(){ canvas.requestPointerLock(); };
+		window.addEventListener('keyup', function(event) { Key.onKeyUp(event); }, false);
+		window.addEventListener('keydown', function(event) { Key.onKeyDown(event); }, false);
+		document.addEventListener('pointerlockchange', lockChange, false);
+		document.addEventListener('mozpointerlockchange', lockChange, false);
+		
+		var myMaze = {};
+		var player = {};
+		
+		//Game state transition functions
+		var gameStart = function(){
+			//Generate a new maze and actor. Go from state 0 to state 1.
+			myMaze = new Maze(10, 10, 60, 0);
+			player = new Actor(0, 0, 180, 90, myMaze);
+			
+			setTimeout( function(){ gamePauseTimeout = 0; }, 500);
+			gamePauseTimeout = 1;
+			gameState = 1;
+		};
+		
+		var gamePause = function(){
+			//Go from state 1 to state 2. Input should be delayed a few frames to prevent double-clicking the Enter key.
+			
+			if(!gamePauseTimeout)
+			{
+				setTimeout( function(){ gamePauseTimeout = 0; }, 500);
+				gamePauseTimeout = 1;
+				gameState = 2;
+			}
+		};
+		
+		var gameResume = function(){
+			//Go from state 2 to state 1. Resume regular input.
+			if(!gamePauseTimeout)
+			{
+				setTimeout( function(){ gamePauseTimeout = 0; }, 500);
+				gamePauseTimeout = 1;
+				gameState = 1;
+			}
+		};
+		
+		var gameOver = function(){
+			//Go from state 1 to state 3. Do clean-up and allow game to return back to restart.
+			gameState = 3;
+		};
+		
+		var gameWin = function(){
+			//Go from state 1 to 4. Similar clean-up to gameOver(). Release pointer lock
+			gameState = 4;
+		};
+		
+		var gameReset = function(){
+			//Go from state 3 or 4 to state 0.
+			gameState = 0;
+		};
+		
+		//When we lose focus, pause the game.
+		canvas.addEventListener('blur', function(event) { if(gameState == 1) gamePause(); }, false);
+		
+		//Loop functions
+		var begin = function(){
+		};
+		
+		var update = function(delta){
+			if(enableGameInputFlag){
+				switch(gameState)
+				{
+					case 0:
+						if(Key.isDown(Key.ENTER)) gameStart();
+						break;
+					case 1:
+						//Player movement
+						if(Key.isDown(Key.FORWARD))player.moveForward(delta);
+						if(Key.isDown(Key.BACK)) player.moveBack(delta);
+						if(Key.isDown(Key.LEFT)) player.moveStrafeLeft(delta);
+						if(Key.isDown(Key.RIGHT)) player.moveStrafeRight(delta);
+						player.mouseLook(Key.mousecoords, delta);
+						if(Key.isDown(Key.ENTER)) gamePause();
+						break;
+					case 2:
+						if(Key.isDown(Key.ENTER)) gameResume();
+						break;
+					case 3:
+					case 4:
+						if(Key.isDown(Key.ENTER)) gameReset();
+						break;
+				}
+			}
+		};
+		
+		var draw = function(interpolationPercentage){
+			context.clearRect(0, 0, 600, 600);
+			switch(gameState)
+			{
+				case 0:
+					context.beginPath();
+					context.rect(0, 0, 600, 600);
+					context.fillStyle = "black";
+					context.fill();
+					break;
+				case 1:
+					myMaze.draw(context);
+					player.draw(context, interpolationPercentage);
+					break;
+				case 2:
+					context.beginPath();
+					context.rect(0, 0, 600, 600);
+					context.fillStyle = "yellow";
+					context.fill();
+					break;
+				case 3:
+					context.beginPath();
+					context.rect(0, 0, 600, 600);
+					context.fillStyle = "red";
+					context.fill();
+					break;
+				case 4:
+					context.beginPath();
+					context.rect(0, 0, 600, 600);
+					context.fillStyle = "blue";
+					context.fill();
+					break;
+			}
+		};
+		
+		var end = function(fps, panic) {
+			fpsCounter.textContent = parseInt(fps, 10) + ' FPS';
+			if (panic) {
+				// This pattern introduces non-deterministic behavior, but in this case
+				// it's better than the alternative (the application would look like it
+				// was running very quickly until the simulation caught up to real
+				// time). See the documentation for `MainLoop.setEnd()` for additional
+				// explanation.
+				var discardedTime = Math.round(MainLoop.resetFrameDelta());
+				//alert('Main loop panicked, probably because the browser tab was put in the background. Discarding ' + discardedTime + 'ms');
+				
+				if(gameState == 1)
+					gamePause();
+			}
+		};
+		
+		MainLoop.setBegin(begin).setUpdate(update).setDraw(draw).setEnd(end).start();
+	}
+	
+	main();
+</script>
